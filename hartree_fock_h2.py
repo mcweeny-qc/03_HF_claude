@@ -7,7 +7,7 @@
 import numpy as np
 
 class HartreeFock:
-    def __init__(self, S, H_core, eri, n_electrons, max_iter=100, convergence=1e-6):
+    def __init__(self, S, H_core, eri, n_electrons, E_nuc=0.0, max_iter=100, convergence=1e-6):
         """
         初始化Hartree-Fock计算
 
@@ -16,6 +16,7 @@ class HartreeFock:
         H_core: 核心哈密顿矩阵 (单电子积分) (n_basis x n_basis)
         eri: 双电子排斥积分 (n_basis x n_basis x n_basis x n_basis)
         n_electrons: 电子数
+        E_nuc: 核-核排斥能
         max_iter: 最大迭代次数
         convergence: 能量收敛阈值
         """
@@ -23,6 +24,7 @@ class HartreeFock:
         self.H_core = H_core
         self.eri = eri
         self.n_electrons = n_electrons
+        self.E_nuc = E_nuc
         self.n_occ = n_electrons // 2  # 占据轨道数(闭壳层)
         self.n_basis = S.shape[0]
         self.max_iter = max_iter
@@ -30,7 +32,8 @@ class HartreeFock:
 
         self.C = None  # 分子轨道系数
         self.P = None  # 密度矩阵
-        self.E_total = 0.0
+        self.E_elec = 0.0  # 电子能量
+        self.E_total = 0.0  # 总能量
         self.orbital_energies = None
 
     def orthogonalize_basis(self):
@@ -147,7 +150,8 @@ class HartreeFock:
                 print(f"SCF收敛! 迭代次数: {iteration}")
                 self.C = C
                 self.P = P_new
-                self.E_total = E_new
+                self.E_elec = E_new
+                self.E_total = E_new + self.E_nuc
                 self.orbital_energies = epsilon
                 return True
 
@@ -159,7 +163,8 @@ class HartreeFock:
         print(f"警告: SCF未在{self.max_iter}次迭代内收敛!")
         self.C = C
         self.P = P
-        self.E_total = E_new
+        self.E_elec = E_new
+        self.E_total = E_new + self.E_nuc
         self.orbital_energies = epsilon
         return False
 
@@ -170,7 +175,9 @@ class HartreeFock:
         print("\n" + "=" * 60)
         print("Hartree-Fock计算结果")
         print("=" * 60)
-        print(f"总电子能量: {self.E_total:.10f} Hartree")
+        print(f"电子能量:       {self.E_elec:.10f} Hartree")
+        print(f"核-核排斥能:    {self.E_nuc:.10f} Hartree")
+        print(f"总能量:         {self.E_total:.10f} Hartree")
         print("\n轨道能量:")
         for i, eps in enumerate(self.orbital_energies):
             occ_str = "占据" if i < self.n_occ else "虚轨道"
@@ -187,53 +194,45 @@ class HartreeFock:
 def create_h2_test_integrals():
     """
     为H2分子创建测试积分
-    使用STO-3G基组的近似值
+    使用STO-3G基组 (R=1.4 bohr) 的积分值
     """
     # 2个基函数 (每个H原子一个)
     n_basis = 2
 
-    # 重叠积分矩阵
+    # S: 重叠积分矩阵
     S = np.array([
-        [1.0, 0.6593],
-        [0.6593, 1.0]
+        [1.0000, 0.6593],
+        [0.6593, 1.0000]
     ])
 
-    # 核心哈密顿矩阵 (动能 + 核吸引)
+    # H_core: 核心哈密顿矩阵 (动能 + 核-电子吸引)
     H_core = np.array([
         [-1.1204, -0.9584],
         [-0.9584, -1.1204]
     ])
 
-    # 双电子排斥积分 (μν|λσ)
+    # 双电子积分 (ij|kl) 格式
+    # 由于对称性，只需要存储唯一的积分值
+    # (11|11), (11|12), (11|22), (12|12), (12|22), (22|22)
     eri = np.zeros((n_basis, n_basis, n_basis, n_basis))
 
-    # 填充双电子积分 (使用对称性)
-    # (11|11)
-    eri[0, 0, 0, 0] = 0.7746
-    # (11|22)
-    eri[0, 0, 1, 1] = 0.5697
-    eri[1, 1, 0, 0] = 0.5697
-    # (22|22)
-    eri[1, 1, 1, 1] = 0.7746
-    # (12|12)
-    eri[0, 1, 0, 1] = 0.4441
-    eri[1, 0, 1, 0] = 0.4441
-    # (11|12)
-    eri[0, 0, 0, 1] = 0.4441
-    eri[0, 0, 1, 0] = 0.4441
-    eri[0, 1, 0, 0] = 0.4441
-    eri[1, 0, 0, 0] = 0.4441
-    # (22|12)
-    eri[1, 1, 0, 1] = 0.4441
-    eri[1, 1, 1, 0] = 0.4441
-    eri[0, 1, 1, 1] = 0.4441
-    eri[1, 0, 1, 1] = 0.4441
-    # (12|11)
-    eri[0, 1, 0, 0] = 0.4441
-    eri[1, 0, 0, 0] = 0.4441
-    # (12|22)
-    eri[0, 1, 1, 1] = 0.4441
-    eri[1, 0, 1, 1] = 0.4441
+    # 填充双电子积分（利用8重对称性）
+    def fill_eri(i, j, k, l, value):
+        """利用对称性填充双电子积分"""
+        indices = [
+            (i,j,k,l), (j,i,k,l), (i,j,l,k), (j,i,l,k),
+            (k,l,i,j), (l,k,i,j), (k,l,j,i), (l,k,j,i)
+        ]
+        for idx in indices:
+            eri[idx] = value
+
+    # STO-3G H2 (R=1.4 bohr) 的双电子积分
+    fill_eri(0, 0, 0, 0, 0.7746)  # (11|11)
+    fill_eri(0, 0, 0, 1, 0.4441)  # (11|12)
+    fill_eri(0, 0, 1, 1, 0.5697)  # (11|22)
+    fill_eri(0, 1, 0, 1, 0.2970)  # (12|12)
+    fill_eri(0, 1, 1, 1, 0.4441)  # (12|22)
+    fill_eri(1, 1, 1, 1, 0.7746)  # (22|22)
 
     return S, H_core, eri
 
@@ -253,8 +252,11 @@ def main():
     # H2分子有2个电子
     n_electrons = 2
 
+    # 核-核排斥能 (H2, R=1.4 bohr)
+    E_nuc = 0.7142857143
+
     # 创建HF计算对象
-    hf = HartreeFock(S, H_core, eri, n_electrons, max_iter=100, convergence=1e-8)
+    hf = HartreeFock(S, H_core, eri, n_electrons, E_nuc, max_iter=100, convergence=1e-8)
 
     # 执行SCF迭代
     converged = hf.scf_iteration()
@@ -262,7 +264,7 @@ def main():
     # 打印结果
     hf.print_results()
 
-    print("\n注: 本程序使用的是H2分子STO-3G基组的近似积分值")
+    print("\n注: 本程序使用的是H2分子STO-3G基组 (R=1.4 bohr) 的积分值")
     print("实际计算中这些积分需要通过量子化学积分程序计算得到")
 
 
